@@ -1,0 +1,6 @@
+{
+  "name": "App Hider Launcher",
+  "description": "Un launcher elegante y minimalista que te permite ocultar aplicaciones seleccionadas con protección de PIN, adaptándose al fondo y colores dinámicos de tu celular.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
