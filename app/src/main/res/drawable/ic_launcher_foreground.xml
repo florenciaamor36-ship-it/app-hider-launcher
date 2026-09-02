@@ -1,0 +1,10 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Centered lock icon representing secure app hiding -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M54,24c-8.8,0 -16,7.2 -16,16v12h-4c-3.3,0 -6,2.7 -6,6v26c0,3.3 2.7,6 6,6h40c3.3,0 6,-2.7 6,-6v-26c0,-3.3 -2.7,-6 -6,-6h-4v-12c0,-8.8 -7.2,-16 -16,-16zM54,30c5.5,0 10,4.5 10,10v12h-20v-12c0,-5.5 4.5,-10 10,-10zM54,66c3.3,0 6,2.7 6,6c0,2.1 -1.1,4 -2.8,5.1l2.8,7.9h-12l2.8,-7.9c-1.7,-1.1 -2.8,-3 -2.8,-5.1c0,-3.3 2.7,-6 6,-6z" />
+</vector>
