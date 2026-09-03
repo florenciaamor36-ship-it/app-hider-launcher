@@ -164,7 +164,13 @@ fun LauncherScreen(viewModel: LauncherViewModel) {
 
     // Default Launcher Status detection
     var isDefaultHome by remember { mutableStateOf(checkIsDefaultLauncher(context)) }
-    var isDefaultBannerDismissed by remember { mutableStateOf(false) }
+    val isDefaultBannerDismissed by viewModel.defaultBannerDismissed.collectAsStateWithLifecycle()
+
+    val defaultLauncherSelectorLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { _ ->
+        isDefaultHome = checkIsDefaultLauncher(context)
+    }
 
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
@@ -177,6 +183,28 @@ fun LauncherScreen(viewModel: LauncherViewModel) {
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
+
+    // Intercept back button gestures to behave like a system launcher
+    androidx.activity.compose.BackHandler(enabled = true) {
+        if (isSettingsOpen) {
+            isSettingsOpen = false
+        } else if (isOnboardingOpen) {
+            isOnboardingOpen = false
+        } else if (isPinDialogOpen) {
+            isPinDialogOpen = false
+            pinInput = ""
+            passwordInput = ""
+            isPinError = false
+        } else if (searchQuery.isNotEmpty()) {
+            searchQuery = ""
+            focusManager.clearFocus()
+        } else if (settingsSearchQuery.isNotEmpty()) {
+            settingsSearchQuery = ""
+        } else {
+            // Do nothing on back press when at the home workspace. 
+            // This prevents the launcher from exiting like a normal app.
         }
     }
 
@@ -493,7 +521,7 @@ fun LauncherScreen(viewModel: LauncherViewModel) {
                             Spacer(modifier = Modifier.height(6.dp))
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 Button(
-                                    onClick = { launchSetDefaultLauncher(context) },
+                                    onClick = { launchSetDefaultLauncher(context, defaultLauncherSelectorLauncher) },
                                     colors = ButtonDefaults.buttonColors(
                                         containerColor = MaterialTheme.colorScheme.primary,
                                         contentColor = MaterialTheme.colorScheme.onPrimary
@@ -504,7 +532,7 @@ fun LauncherScreen(viewModel: LauncherViewModel) {
                                     Text("Elegir Launcher", fontSize = 12.sp, fontWeight = FontWeight.Bold)
                                 }
                                 TextButton(
-                                    onClick = { isDefaultBannerDismissed = true },
+                                    onClick = { viewModel.dismissDefaultBanner() },
                                     contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
                                     modifier = Modifier.height(34.dp)
                                 ) {
@@ -1067,7 +1095,7 @@ fun LauncherScreen(viewModel: LauncherViewModel) {
                                         Spacer(modifier = Modifier.height(12.dp))
 
                                         Button(
-                                            onClick = { launchSetDefaultLauncher(context) },
+                                            onClick = { launchSetDefaultLauncher(context, defaultLauncherSelectorLauncher) },
                                             modifier = Modifier.fillMaxWidth(),
                                             colors = ButtonDefaults.buttonColors(
                                                 containerColor = if (isDefaultHome) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
@@ -2193,31 +2221,38 @@ fun checkIsDefaultLauncher(context: Context): Boolean {
     return resolveInfo?.activityInfo?.packageName == context.packageName
 }
 
-fun launchSetDefaultLauncher(context: Context) {
+fun launchSetDefaultLauncher(context: Context, launcher: androidx.activity.result.ActivityResultLauncher<Intent>) {
     try {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val roleManager = context.getSystemService(RoleManager::class.java)
             if (roleManager != null && roleManager.isRoleAvailable(RoleManager.ROLE_HOME)) {
                 val intent = roleManager.createRequestRoleIntent(RoleManager.ROLE_HOME)
-                context.startActivity(intent)
+                launcher.launch(intent)
                 return
             }
         }
         val intent = Intent(Settings.ACTION_HOME_SETTINGS)
-        context.startActivity(intent)
+        launcher.launch(intent)
     } catch (e: Exception) {
         try {
             val intent = Intent(Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS)
-            context.startActivity(intent)
+            launcher.launch(intent)
         } catch (e2: Exception) {
             try {
                 val intent = Intent(Intent.ACTION_MAIN).apply {
                     addCategory(Intent.CATEGORY_HOME)
-                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
                 }
-                context.startActivity(intent)
+                val chooser = Intent.createChooser(intent, "Selecciona App Hider como pantalla de inicio")
+                launcher.launch(chooser)
             } catch (e3: Exception) {
-                Toast.makeText(context, "Abre Ajustes > Aplicaciones > Aplicaciones predeterminadas > App de inicio", Toast.LENGTH_LONG).show()
+                try {
+                    val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                        data = Uri.fromParts("package", context.packageName, null)
+                    }
+                    launcher.launch(intent)
+                } catch (e4: Exception) {
+                    Toast.makeText(context, "Abre Ajustes > Aplicaciones > Aplicaciones predeterminadas > App de inicio", Toast.LENGTH_LONG).show()
+                }
             }
         }
     }

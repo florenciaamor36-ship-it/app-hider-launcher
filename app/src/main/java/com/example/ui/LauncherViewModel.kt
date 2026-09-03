@@ -77,6 +77,10 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         it["onboarding_completed"]?.toBoolean() ?: false // Default false
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
 
+    val defaultBannerDismissed: StateFlow<Boolean> = settings.map {
+        it["default_banner_dismissed"]?.toBoolean() ?: false
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+
     val intruderLogs: StateFlow<List<String>> = settings.map {
         val logsStr = it["intruder_logs"] ?: ""
         if (logsStr.isBlank()) emptyList() else logsStr.split("##")
@@ -224,6 +228,12 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     fun clearIntruderLogs() {
         viewModelScope.launch {
             repository.saveSetting("intruder_logs", "")
+        }
+    }
+
+    fun dismissDefaultBanner() {
+        viewModelScope.launch {
+            repository.saveSetting("default_banner_dismissed", "true")
         }
     }
 }
