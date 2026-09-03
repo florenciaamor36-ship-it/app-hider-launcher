@@ -3,6 +3,11 @@ package com.example.ui
 import android.app.Application
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.drawable.Drawable
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.AppInfo
@@ -60,18 +65,6 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         it["security_password"] ?: "admin123" // Default password
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "admin123")
 
-    val decoyPin: StateFlow<String> = settings.map {
-        it["decoy_pin"] ?: "9999" // Default decoy PIN
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "9999")
-
-    val decoyPassword: StateFlow<String> = settings.map {
-        it["decoy_password"] ?: "decoy123" // Default decoy password
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "decoy123")
-
-    // Temporary reactive state to detect if the user entered via Decoy mode
-    private val _isDecoyLogged = MutableStateFlow(false)
-    val isDecoyLogged: StateFlow<Boolean> = _isDecoyLogged.asStateFlow()
-
     val disguiseName: StateFlow<String> = settings.map {
         it["disguise_name"] ?: "App Hider" // Default camouflage app name
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "App Hider")
@@ -128,7 +121,8 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                     val appName = resolveInfo.loadLabel(pm).toString()
                     val icon = resolveInfo.activityInfo.loadIcon(pm)
                     val className = resolveInfo.activityInfo.name
-                    AppInfo(packageName, appName, icon, className)
+                    val iconBitmap = drawableToImageBitmap(icon)
+                    AppInfo(packageName, appName, icon, className, iconBitmap)
                 }.distinctBy { it.packageName }.sortedBy { it.appName.lowercase() }
 
                 _installedApps.value = apps
@@ -137,6 +131,20 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
             } finally {
                 _isLoadingApps.value = false
             }
+        }
+    }
+
+    private fun drawableToImageBitmap(drawable: Drawable): ImageBitmap? {
+        return try {
+            val width = if (drawable.intrinsicWidth > 0) drawable.intrinsicWidth.coerceIn(48, 160) else 128
+            val height = if (drawable.intrinsicHeight > 0) drawable.intrinsicHeight.coerceIn(48, 160) else 128
+            val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+            val canvas = Canvas(bitmap)
+            drawable.setBounds(0, 0, canvas.width, canvas.height)
+            drawable.draw(canvas)
+            bitmap.asImageBitmap()
+        } catch (e: Exception) {
+            null
         }
     }
 
@@ -178,22 +186,6 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         viewModelScope.launch {
             repository.saveSetting("trigger_taps", taps.toString())
         }
-    }
-
-    fun updateDecoyPin(pin: String) {
-        viewModelScope.launch {
-            repository.saveSetting("decoy_pin", pin)
-        }
-    }
-
-    fun updateDecoyPassword(password: String) {
-        viewModelScope.launch {
-            repository.saveSetting("decoy_password", password)
-        }
-    }
-
-    fun setDecoyLogged(active: Boolean) {
-        _isDecoyLogged.value = active
     }
 
     fun updateDisguiseName(name: String) {
