@@ -1,18 +1,25 @@
 package com.example
 
+import android.app.role.RoleManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import android.widget.ImageView
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
@@ -25,6 +32,8 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
@@ -52,13 +61,14 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
-import android.net.Uri
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.AppInfo
 import com.example.ui.LauncherViewModel
 import com.example.ui.theme.MyApplicationTheme
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     private val viewModel: LauncherViewModel by viewModels()
@@ -91,10 +101,7 @@ fun LauncherScreen(viewModel: LauncherViewModel) {
     val triggerTapsRequired by viewModel.triggerTaps.collectAsStateWithLifecycle()
     val hiddenAppsList by viewModel.hiddenApps.collectAsStateWithLifecycle()
 
-    // Premium state collections
-    val decoyPin by viewModel.decoyPin.collectAsStateWithLifecycle()
-    val decoyPassword by viewModel.decoyPassword.collectAsStateWithLifecycle()
-    val isDecoyLogged by viewModel.isDecoyLogged.collectAsStateWithLifecycle()
+    // Premium and state collections
     val disguiseName by viewModel.disguiseName.collectAsStateWithLifecycle()
     val onboardingCompleted by viewModel.onboardingCompleted.collectAsStateWithLifecycle()
     val intruderLogs by viewModel.intruderLogs.collectAsStateWithLifecycle()
@@ -123,7 +130,6 @@ fun LauncherScreen(viewModel: LauncherViewModel) {
         contract = ActivityResultContracts.StartActivityForResult()
     ) { result ->
         if (result.resultCode == android.app.Activity.RESULT_OK) {
-            viewModel.setDecoyLogged(false) // Decoy false when authenticated via system
             isSettingsOpen = true
             Toast.makeText(context, "Autenticación del sistema correcta", Toast.LENGTH_SHORT).show()
         } else {
@@ -144,18 +150,6 @@ fun LauncherScreen(viewModel: LauncherViewModel) {
     var confirmNewPasswordInput by remember { mutableStateOf("") }
     var passwordChangeError by remember { mutableStateOf("") }
 
-    // Change Decoy PIN states
-    var isChangingDecoyPin by remember { mutableStateOf(false) }
-    var newDecoyPinInput by remember { mutableStateOf("") }
-    var confirmNewDecoyPinInput by remember { mutableStateOf("") }
-    var decoyPinChangeError by remember { mutableStateOf("") }
-
-    // Change Decoy Password states
-    var isChangingDecoyPassword by remember { mutableStateOf(false) }
-    var newDecoyPasswordInput by remember { mutableStateOf("") }
-    var confirmNewDecoyPasswordInput by remember { mutableStateOf("") }
-    var decoyPasswordChangeError by remember { mutableStateOf("") }
-
     // Onboarding Guide tutorial states
     var isOnboardingOpen by remember { mutableStateOf(false) }
     var onboardingStep by remember { mutableStateOf(1) }
@@ -168,14 +162,26 @@ fun LauncherScreen(viewModel: LauncherViewModel) {
     // Sectorization filter tab state (TODAS, SOCIAL, BANCOS, JUEGOS, HERRAMIENTAS, OCULTAS, VISIBLES)
     var selectedCategoryTab by remember { mutableStateOf("TODAS") }
 
-    // Pagination states
-    var homeCurrentPage by remember { mutableStateOf(0) }
-    var settingsCurrentPage by remember { mutableStateOf(0) }
+    // Default Launcher Status detection
+    var isDefaultHome by remember { mutableStateOf(checkIsDefaultLauncher(context)) }
+    var isDefaultBannerDismissed by remember { mutableStateOf(false) }
 
-    // Reset home page on search or filter change
-    LaunchedEffect(searchQuery) {
-        homeCurrentPage = 0
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                isDefaultHome = checkIsDefaultLauncher(context)
+                viewModel.loadInstalledApps()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
     }
+
+    // Pagination states
+    var settingsCurrentPage by remember { mutableStateOf(0) }
 
     // Reset settings page on query or category change
     LaunchedEffect(settingsSearchQuery, selectedCategoryTab) {
@@ -197,13 +203,12 @@ fun LauncherScreen(viewModel: LauncherViewModel) {
         }
     }
 
-    // Filtered launcher home apps based on top search bar and Decoy Mode state
-    val filteredHomeApps = remember(visibleApps, allInstalledApps, isDecoyLogged, searchQuery) {
-        val baseList = if (isDecoyLogged) allInstalledApps else visibleApps
+    // Filtered launcher home apps based on top search bar
+    val filteredHomeApps = remember(visibleApps, searchQuery) {
         if (searchQuery.isBlank()) {
-            baseList
+            visibleApps
         } else {
-            baseList.filter {
+            visibleApps.filter {
                 it.appName.contains(searchQuery, ignoreCase = true) ||
                 it.packageName.contains(searchQuery, ignoreCase = true)
             }
@@ -264,11 +269,16 @@ fun LauncherScreen(viewModel: LauncherViewModel) {
     // Pagination calculations
     val homeItemsPerPage = 12
     val homeTotalPages = remember(filteredHomeApps) {
-        if (filteredHomeApps.isEmpty()) 1 else ((filteredHomeApps.size + homeItemsPerPage - 1) / homeItemsPerPage)
+        val total = if (filteredHomeApps.isEmpty()) 1 else ((filteredHomeApps.size + homeItemsPerPage - 1) / homeItemsPerPage)
+        if (total < 1) 1 else total
     }
-    val safeHomeCurrentPage = if (homeCurrentPage >= homeTotalPages) 0 else homeCurrentPage
-    val pagedHomeApps = remember(filteredHomeApps, safeHomeCurrentPage) {
-        filteredHomeApps.drop(safeHomeCurrentPage * homeItemsPerPage).take(homeItemsPerPage)
+    val homePagerState = rememberPagerState(pageCount = { homeTotalPages })
+    val coroutineScope = rememberCoroutineScope()
+
+    LaunchedEffect(filteredHomeApps.size, searchQuery) {
+        if (homePagerState.currentPage >= homeTotalPages && homeTotalPages > 0) {
+            homePagerState.scrollToPage(0)
+        }
     }
 
     val settingsItemsPerPage = 8
@@ -278,6 +288,30 @@ fun LauncherScreen(viewModel: LauncherViewModel) {
     val safeSettingsCurrentPage = if (settingsCurrentPage >= settingsTotalPages) 0 else settingsCurrentPage
     val pagedSettingsApps = remember(filteredSettingsApps, safeSettingsCurrentPage) {
         filteredSettingsApps.drop(safeSettingsCurrentPage * settingsItemsPerPage).take(settingsItemsPerPage)
+    }
+
+    // Direct security trigger function
+    val triggerAuth: () -> Unit = {
+        focusManager.clearFocus()
+        if (authMethod == "SYSTEM") {
+            val km = context.getSystemService(Context.KEYGUARD_SERVICE) as android.app.KeyguardManager
+            if (km.isDeviceSecure) {
+                val intent = km.createConfirmDeviceCredentialIntent(
+                    "Ajustes de Seguridad",
+                    "Confirma tu patrón, PIN, contraseña o huella dactilar para entrar."
+                )
+                if (intent != null) {
+                    systemLockLauncher.launch(intent)
+                } else {
+                    isPinDialogOpen = true
+                }
+            } else {
+                Toast.makeText(context, "El dispositivo no tiene bloqueo de pantalla configurado. Usando método alternativo.", Toast.LENGTH_LONG).show()
+                isPinDialogOpen = true
+            }
+        } else {
+            isPinDialogOpen = true
+        }
     }
 
     // Main layout container (Transparent background so system wallpaper draws behind)
@@ -298,25 +332,7 @@ fun LauncherScreen(viewModel: LauncherViewModel) {
 
                         if (tapCount >= triggerTapsRequired) {
                             tapCount = 0 // Reset tap counter
-                            if (authMethod == "SYSTEM") {
-                                val km = context.getSystemService(Context.KEYGUARD_SERVICE) as android.app.KeyguardManager
-                                if (km.isDeviceSecure) {
-                                    val intent = km.createConfirmDeviceCredentialIntent(
-                                        "Ajustes de Seguridad",
-                                        "Confirma tu patrón, PIN, contraseña o huella dactilar para entrar."
-                                    )
-                                    if (intent != null) {
-                                        systemLockLauncher.launch(intent)
-                                    } else {
-                                        isPinDialogOpen = true
-                                    }
-                                } else {
-                                    Toast.makeText(context, "El dispositivo no tiene bloqueo de pantalla configurado. Usando método alternativo.", Toast.LENGTH_LONG).show()
-                                    isPinDialogOpen = true
-                                }
-                            } else {
-                                isPinDialogOpen = true
-                            }
+                            triggerAuth()
                         }
                     }
                 )
@@ -330,7 +346,7 @@ fun LauncherScreen(viewModel: LauncherViewModel) {
                 .padding(horizontal = 16.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            // Elegant clock and lock trigger container (Padlock icon is now completely hidden)
+            // Elegant clock and lock trigger container (Tap or Long Press the clock to unlock)
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -338,10 +354,34 @@ fun LauncherScreen(viewModel: LauncherViewModel) {
                 horizontalArrangement = Arrangement.Center,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // Date & Time widget
+                // Date & Time widget with direct tap and long-press authentication triggers
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
-                    modifier = Modifier.padding(vertical = 12.dp)
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(16.dp))
+                        .pointerInput(triggerTapsRequired, authMethod) {
+                            detectTapGestures(
+                                onTap = {
+                                    val nowTime = System.currentTimeMillis()
+                                    if (nowTime - lastTapTime < 2000) {
+                                        tapCount += 1
+                                    } else {
+                                        tapCount = 1
+                                    }
+                                    lastTapTime = nowTime
+
+                                    if (tapCount >= triggerTapsRequired) {
+                                        tapCount = 0
+                                        triggerAuth()
+                                    }
+                                },
+                                onLongPress = {
+                                    triggerAuth()
+                                }
+                            )
+                        }
+                        .padding(horizontal = 16.dp, vertical = 12.dp)
+                        .testTag("desktop_clock_widget")
                 ) {
                     Text(
                         text = currentTime,
@@ -416,6 +456,66 @@ fun LauncherScreen(viewModel: LauncherViewModel) {
                 )
             )
 
+            // Default Launcher Banner: alert if not set as default home launcher
+            if (!isDefaultHome && !isDefaultBannerDismissed) {
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 12.dp)
+                        .testTag("default_launcher_banner"),
+                    shape = RoundedCornerShape(16.dp),
+                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.95f),
+                    shadowElevation = 6.dp
+                ) {
+                    Row(
+                        modifier = Modifier.padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Home,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                            modifier = Modifier.size(32.dp)
+                        )
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Establecer como Launcher Predeterminado",
+                                fontWeight = FontWeight.Bold,
+                                style = MaterialTheme.typography.titleSmall,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer
+                            )
+                            Text(
+                                text = "Elige esta app como inicio para que permanezca activa al salir de apps o reiniciar el celular.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.85f)
+                            )
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Button(
+                                    onClick = { launchSetDefaultLauncher(context) },
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = MaterialTheme.colorScheme.primary,
+                                        contentColor = MaterialTheme.colorScheme.onPrimary
+                                    ),
+                                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 4.dp),
+                                    modifier = Modifier.height(34.dp)
+                                ) {
+                                    Text("Elegir Launcher", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                }
+                                TextButton(
+                                    onClick = { isDefaultBannerDismissed = true },
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                                    modifier = Modifier.height(34.dp)
+                                ) {
+                                    Text("Ahora no", color = MaterialTheme.colorScheme.onPrimaryContainer, fontSize = 12.sp)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             // Dynamic view: Loading vs. Empty state vs. App grid
             if (isLoading) {
                 Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.Center) {
@@ -465,19 +565,30 @@ fun LauncherScreen(viewModel: LauncherViewModel) {
                     }
                 }
             } else {
-                // Clean 4-column App Grid layout
-                LazyVerticalGrid(
-                    columns = GridCells.Fixed(4),
+                // Horizontal Swipeable Pager: Drag smoothly between desktop pages
+                HorizontalPager(
+                    state = homePagerState,
                     modifier = Modifier
                         .weight(1f)
-                        .padding(top = 8.dp)
-                        .testTag("app_grid"),
-                    contentPadding = PaddingValues(bottom = 16.dp),
-                    verticalArrangement = Arrangement.spacedBy(20.dp),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    items(pagedHomeApps, key = { it.packageName }) { app ->
-                        AppGridItem(app = app, context = context)
+                        .fillMaxWidth()
+                        .testTag("home_horizontal_pager")
+                ) { pageIndex ->
+                    val pageApps = remember(filteredHomeApps, pageIndex) {
+                        filteredHomeApps.drop(pageIndex * homeItemsPerPage).take(homeItemsPerPage)
+                    }
+                    LazyVerticalGrid(
+                        columns = GridCells.Fixed(4),
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(top = 8.dp)
+                            .testTag("app_grid_$pageIndex"),
+                        contentPadding = PaddingValues(bottom = 16.dp),
+                        verticalArrangement = Arrangement.spacedBy(20.dp),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        items(pageApps, key = { it.packageName }) { app ->
+                            AppGridItem(app = app, context = context)
+                        }
                     }
                 }
 
@@ -491,13 +602,19 @@ fun LauncherScreen(viewModel: LauncherViewModel) {
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         IconButton(
-                            onClick = { if (safeHomeCurrentPage > 0) homeCurrentPage = safeHomeCurrentPage - 1 },
-                            enabled = safeHomeCurrentPage > 0
+                            onClick = {
+                                if (homePagerState.currentPage > 0) {
+                                    coroutineScope.launch {
+                                        homePagerState.animateScrollToPage(homePagerState.currentPage - 1)
+                                    }
+                                }
+                            },
+                            enabled = homePagerState.currentPage > 0
                         ) {
                             Icon(
                                 imageVector = Icons.Default.KeyboardArrowLeft,
                                 contentDescription = "Página anterior",
-                                tint = if (safeHomeCurrentPage > 0) Color.White else Color.White.copy(alpha = 0.25f),
+                                tint = if (homePagerState.currentPage > 0) Color.White else Color.White.copy(alpha = 0.25f),
                                 modifier = Modifier.size(28.dp)
                             )
                         }
@@ -509,13 +626,17 @@ fun LauncherScreen(viewModel: LauncherViewModel) {
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             for (i in 0 until homeTotalPages) {
-                                val isSelected = i == safeHomeCurrentPage
+                                val isSelected = i == homePagerState.currentPage
                                 Box(
                                     modifier = Modifier
                                         .size(if (isSelected) 10.dp else 7.dp)
                                         .clip(CircleShape)
                                         .background(if (isSelected) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = 0.45f))
-                                        .clickable { homeCurrentPage = i }
+                                        .clickable {
+                                            coroutineScope.launch {
+                                                homePagerState.animateScrollToPage(i)
+                                            }
+                                        }
                                 )
                             }
                         }
@@ -523,13 +644,19 @@ fun LauncherScreen(viewModel: LauncherViewModel) {
                         Spacer(modifier = Modifier.width(8.dp))
 
                         IconButton(
-                            onClick = { if (safeHomeCurrentPage < homeTotalPages - 1) homeCurrentPage = safeHomeCurrentPage + 1 },
-                            enabled = safeHomeCurrentPage < homeTotalPages - 1
+                            onClick = {
+                                if (homePagerState.currentPage < homeTotalPages - 1) {
+                                    coroutineScope.launch {
+                                        homePagerState.animateScrollToPage(homePagerState.currentPage + 1)
+                                    }
+                                }
+                            },
+                            enabled = homePagerState.currentPage < homeTotalPages - 1
                         ) {
                             Icon(
                                 imageVector = Icons.Default.KeyboardArrowRight,
                                 contentDescription = "Página siguiente",
-                                tint = if (safeHomeCurrentPage < homeTotalPages - 1) Color.White else Color.White.copy(alpha = 0.25f),
+                                tint = if (homePagerState.currentPage < homeTotalPages - 1) Color.White else Color.White.copy(alpha = 0.25f),
                                 modifier = Modifier.size(28.dp)
                             )
                         }
@@ -613,17 +740,10 @@ fun LauncherScreen(viewModel: LauncherViewModel) {
                              Button(
                                 onClick = {
                                     if (passwordInput == securityPassword) {
-                                        viewModel.setDecoyLogged(false)
                                         isSettingsOpen = true
                                         isPinDialogOpen = false
                                         passwordInput = ""
                                         Toast.makeText(context, "Ajustes de Seguridad Desbloqueados", Toast.LENGTH_SHORT).show()
-                                    } else if (passwordInput == decoyPassword) {
-                                        viewModel.setDecoyLogged(true)
-                                        isSettingsOpen = true
-                                        isPinDialogOpen = false
-                                        passwordInput = ""
-                                        Toast.makeText(context, "Modo Seguro Activo", Toast.LENGTH_SHORT).show()
                                     } else {
                                         isPinError = true
                                         viewModel.addIntruderLog("Fallo de Contraseña Alfanumérica")
@@ -667,17 +787,10 @@ fun LauncherScreen(viewModel: LauncherViewModel) {
                                         // Automatic verify when 4 digits are completed
                                         if (input.length == 4) {
                                             if (input == securityPin) {
-                                                viewModel.setDecoyLogged(false)
                                                 isSettingsOpen = true
                                                 isPinDialogOpen = false
                                                 pinInput = ""
                                                 Toast.makeText(context, "Ajustes de Seguridad Desbloqueados", Toast.LENGTH_SHORT).show()
-                                            } else if (input == decoyPin) {
-                                                viewModel.setDecoyLogged(true)
-                                                isSettingsOpen = true
-                                                isPinDialogOpen = false
-                                                pinInput = ""
-                                                Toast.makeText(context, "Modo Seguro Activo", Toast.LENGTH_SHORT).show()
                                             } else {
                                                 isPinError = true
                                                 viewModel.addIntruderLog("Fallo de PIN Numérico")
@@ -740,17 +853,10 @@ fun LauncherScreen(viewModel: LauncherViewModel) {
                                                             }
                                                             "OK" -> {
                                                                 if (pinInput == securityPin) {
-                                                                    viewModel.setDecoyLogged(false)
                                                                     isSettingsOpen = true
                                                                     isPinDialogOpen = false
                                                                     pinInput = ""
                                                                     Toast.makeText(context, "Ajustes de Seguridad Desbloqueados", Toast.LENGTH_SHORT).show()
-                                                                } else if (pinInput == decoyPin) {
-                                                                    viewModel.setDecoyLogged(true)
-                                                                    isSettingsOpen = true
-                                                                    isPinDialogOpen = false
-                                                                    pinInput = ""
-                                                                    Toast.makeText(context, "Modo Seguro Activo", Toast.LENGTH_SHORT).show()
                                                                 } else {
                                                                     isPinError = true
                                                                     viewModel.addIntruderLog("Fallo de PIN Numérico")
@@ -763,17 +869,10 @@ fun LauncherScreen(viewModel: LauncherViewModel) {
                                                                     isPinError = false
                                                                     if (pinInput.length == 4) {
                                                                         if (pinInput == securityPin) {
-                                                                            viewModel.setDecoyLogged(false)
                                                                             isSettingsOpen = true
                                                                             isPinDialogOpen = false
                                                                             pinInput = ""
                                                                             Toast.makeText(context, "Ajustes de Seguridad Desbloqueados", Toast.LENGTH_SHORT).show()
-                                                                        } else if (pinInput == decoyPin) {
-                                                                            viewModel.setDecoyLogged(true)
-                                                                            isSettingsOpen = true
-                                                                            isPinDialogOpen = false
-                                                                            pinInput = ""
-                                                                            Toast.makeText(context, "Modo Seguro Activo", Toast.LENGTH_SHORT).show()
                                                                         } else {
                                                                             isPinError = true
                                                                             viewModel.addIntruderLog("Fallo de PIN Numérico")
@@ -896,48 +995,100 @@ fun LauncherScreen(viewModel: LauncherViewModel) {
                         modifier = Modifier.weight(1f),
                         verticalArrangement = Arrangement.spacedBy(16.dp)
                     ) {
-                        if (isDecoyLogged) {
-                            // Decoy dashboard settings: show highly convincing simulation settings
+                        // Full settings page with all features
+                        // Launcher Predeterminado Card
                             item {
                                 Card(
-                                    modifier = Modifier.fillMaxWidth(),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .testTag("settings_default_launcher_card"),
                                     colors = CardDefaults.cardColors(
-                                        containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.55f)
+                                        containerColor = if (isDefaultHome) {
+                                            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f)
+                                        } else {
+                                            MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.35f)
+                                        }
+                                    ),
+                                    border = androidx.compose.foundation.BorderStroke(
+                                        1.dp,
+                                        if (isDefaultHome) MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)
+                                        else MaterialTheme.colorScheme.error.copy(alpha = 0.5f)
                                     )
                                 ) {
                                     Column(modifier = Modifier.padding(16.dp)) {
-                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                modifier = Modifier.weight(1f)
+                                            ) {
+                                                Icon(
+                                                    imageVector = if (isDefaultHome) Icons.Default.CheckCircle else Icons.Default.Warning,
+                                                    contentDescription = null,
+                                                    tint = if (isDefaultHome) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+                                                    modifier = Modifier.size(24.dp)
+                                                )
+                                                Spacer(modifier = Modifier.width(8.dp))
+                                                Text(
+                                                    text = "Launcher Predeterminado",
+                                                    fontWeight = FontWeight.Bold,
+                                                    style = MaterialTheme.typography.titleMedium
+                                                )
+                                            }
+                                            Surface(
+                                                shape = RoundedCornerShape(8.dp),
+                                                color = if (isDefaultHome) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
+                                            ) {
+                                                Text(
+                                                    text = if (isDefaultHome) "ACTIVO" else "INACTIVO",
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = Color.White,
+                                                    fontWeight = FontWeight.Bold,
+                                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                                )
+                                            }
+                                        }
+
+                                        Spacer(modifier = Modifier.height(8.dp))
+
+                                        Text(
+                                            text = if (isDefaultHome) {
+                                                "✅ Esta app está elegida como la pantalla de inicio principal de tu celular. Al encender el celular o salir de cualquier app, permanecerás siempre en este launcher seguro.\n\nPuedes cambiar o elegir otro launcher cuando quieras."
+                                            } else {
+                                                "⚠️ Esta app todavía no está establecida como tu pantalla de inicio predeterminada en Android. Por eso, al salir de apps o presionar el botón de inicio, el celular vuelve al launcher de fábrica.\n\nToca el botón para configurarla como 'App de inicio' y que quede fija y permanente al prender el teléfono."
+                                            },
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+
+                                        Spacer(modifier = Modifier.height(12.dp))
+
+                                        Button(
+                                            onClick = { launchSetDefaultLauncher(context) },
+                                            modifier = Modifier.fillMaxWidth(),
+                                            colors = ButtonDefaults.buttonColors(
+                                                containerColor = if (isDefaultHome) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+                                                contentColor = Color.White
+                                            )
+                                        ) {
                                             Icon(
-                                                imageVector = Icons.Default.Info,
+                                                imageVector = Icons.Default.Home,
                                                 contentDescription = null,
-                                                tint = MaterialTheme.colorScheme.primary,
-                                                modifier = Modifier.size(24.dp)
+                                                modifier = Modifier.size(18.dp)
                                             )
                                             Spacer(modifier = Modifier.width(8.dp))
                                             Text(
-                                                text = "Panel de Control de Sistema",
-                                                fontWeight = FontWeight.Bold,
-                                                style = MaterialTheme.typography.titleMedium
+                                                text = if (isDefaultHome) "Cambiar / Elegir otro Launcher" else "Establecer como Launcher Predeterminado",
+                                                fontWeight = FontWeight.Bold
                                             )
-                                        }
-                                        Spacer(modifier = Modifier.height(12.dp))
-                                        Text(
-                                            text = "Licencia Activa: Edición Gratuita\nEstado: Conectado y seguro\nÚltima sincronización: En tiempo real\nLa protección de fondo está funcionando sin errores en tu dispositivo.",
-                                            style = MaterialTheme.typography.bodyMedium,
-                                            lineHeight = 22.sp
-                                        )
-                                        Spacer(modifier = Modifier.height(16.dp))
-                                        Button(
-                                            onClick = { isOnboardingOpen = true },
-                                            modifier = Modifier.fillMaxWidth()
-                                        ) {
-                                            Text("Ver Guía Paso a Paso")
                                         }
                                     }
                                 }
                             }
-                        } else {
-                            // Full, normal settings page with all features
+
                             item {
                                 Card(
                                     modifier = Modifier.fillMaxWidth(),
@@ -1072,173 +1223,7 @@ fun LauncherScreen(viewModel: LauncherViewModel) {
                                 }
                             }
 
-                            // Decoy Credentials Mode setup card
-                            item {
-                                Card(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    colors = CardDefaults.cardColors(
-                                        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-                                    )
-                                ) {
-                                    Column(modifier = Modifier.padding(16.dp)) {
-                                        Text(
-                                            text = "Modo Señuelo (Decoy Premium)",
-                                            fontWeight = FontWeight.Bold,
-                                            style = MaterialTheme.typography.titleMedium
-                                        )
-                                        Text(
-                                            text = "Crea un código falso que abra la app con un simulador inofensivo.",
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
-                                        Spacer(modifier = Modifier.height(12.dp))
 
-                                        if (authMethod == "PIN") {
-                                            Row(
-                                                modifier = Modifier.fillMaxWidth(),
-                                                horizontalArrangement = Arrangement.SpaceBetween,
-                                                verticalAlignment = Alignment.CenterVertically
-                                            ) {
-                                                Column {
-                                                    Text("PIN Señuelo", fontWeight = FontWeight.Bold)
-                                                    Text("PIN actual: $decoyPin", style = MaterialTheme.typography.bodySmall)
-                                                }
-                                                Button(
-                                                    onClick = { isChangingDecoyPin = !isChangingDecoyPin },
-                                                    colors = ButtonDefaults.buttonColors(
-                                                        containerColor = MaterialTheme.colorScheme.secondaryContainer
-                                                    )
-                                                ) {
-                                                    Text(if (isChangingDecoyPin) "Cancelar" else "Modificar")
-                                                }
-                                            }
-
-                                            if (isChangingDecoyPin) {
-                                                Spacer(modifier = Modifier.height(12.dp))
-                                                OutlinedTextField(
-                                                    value = newDecoyPinInput,
-                                                    onValueChange = { input ->
-                                                        if (input.length <= 4 && input.all { it.isDigit() }) {
-                                                            newDecoyPinInput = input
-                                                        }
-                                                    },
-                                                    label = { Text("Nuevo PIN Señuelo (4 dígitos)") },
-                                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
-                                                    visualTransformation = PasswordVisualTransformation(),
-                                                    singleLine = true,
-                                                    modifier = Modifier.fillMaxWidth()
-                                                )
-                                                Spacer(modifier = Modifier.height(8.dp))
-                                                OutlinedTextField(
-                                                    value = confirmNewDecoyPinInput,
-                                                    onValueChange = { input ->
-                                                        if (input.length <= 4 && input.all { it.isDigit() }) {
-                                                            confirmNewDecoyPinInput = input
-                                                        }
-                                                    },
-                                                    label = { Text("Confirmar PIN Señuelo") },
-                                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
-                                                    visualTransformation = PasswordVisualTransformation(),
-                                                    singleLine = true,
-                                                    modifier = Modifier.fillMaxWidth()
-                                                )
-                                                if (decoyPinChangeError.isNotEmpty()) {
-                                                    Text(decoyPinChangeError, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
-                                                    Spacer(modifier = Modifier.height(8.dp))
-                                                }
-                                                Button(
-                                                    onClick = {
-                                                        if (newDecoyPinInput.length != 4) {
-                                                            decoyPinChangeError = "Debe tener exactamente 4 dígitos."
-                                                        } else if (newDecoyPinInput != confirmNewDecoyPinInput) {
-                                                            decoyPinChangeError = "Los códigos PIN señuelo no coinciden."
-                                                        } else if (newDecoyPinInput == securityPin) {
-                                                            decoyPinChangeError = "El PIN señuelo no puede ser igual al real."
-                                                        } else {
-                                                            viewModel.updateDecoyPin(newDecoyPinInput)
-                                                            isChangingDecoyPin = false
-                                                            newDecoyPinInput = ""
-                                                            confirmNewDecoyPinInput = ""
-                                                            decoyPinChangeError = ""
-                                                            Toast.makeText(context, "PIN Señuelo guardado", Toast.LENGTH_SHORT).show()
-                                                        }
-                                                    },
-                                                    modifier = Modifier.align(Alignment.End)
-                                                ) {
-                                                    Text("Guardar PIN Señuelo")
-                                                }
-                                            }
-                                        } else if (authMethod == "PASSWORD") {
-                                            Row(
-                                                modifier = Modifier.fillMaxWidth(),
-                                                horizontalArrangement = Arrangement.SpaceBetween,
-                                                verticalAlignment = Alignment.CenterVertically
-                                            ) {
-                                                Column {
-                                                    Text("Contraseña Señuela", fontWeight = FontWeight.Bold)
-                                                    Text("Contraseña actual: $decoyPassword", style = MaterialTheme.typography.bodySmall)
-                                                }
-                                                Button(
-                                                    onClick = { isChangingDecoyPassword = !isChangingDecoyPassword },
-                                                    colors = ButtonDefaults.buttonColors(
-                                                        containerColor = MaterialTheme.colorScheme.secondaryContainer
-                                                    )
-                                                ) {
-                                                    Text(if (isChangingDecoyPassword) "Cancelar" else "Modificar")
-                                                }
-                                            }
-
-                                            if (isChangingDecoyPassword) {
-                                                Spacer(modifier = Modifier.height(12.dp))
-                                                OutlinedTextField(
-                                                    value = newDecoyPasswordInput,
-                                                    onValueChange = { newDecoyPasswordInput = it },
-                                                    label = { Text("Nueva Contraseña Señuela") },
-                                                    visualTransformation = PasswordVisualTransformation(),
-                                                    singleLine = true,
-                                                    modifier = Modifier.fillMaxWidth()
-                                                )
-                                                Spacer(modifier = Modifier.height(8.dp))
-                                                OutlinedTextField(
-                                                    value = confirmNewDecoyPasswordInput,
-                                                    onValueChange = { confirmNewDecoyPasswordInput = it },
-                                                    label = { Text("Confirmar Contraseña Señuela") },
-                                                    visualTransformation = PasswordVisualTransformation(),
-                                                    singleLine = true,
-                                                    modifier = Modifier.fillMaxWidth()
-                                                )
-                                                if (decoyPasswordChangeError.isNotEmpty()) {
-                                                    Text(decoyPasswordChangeError, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
-                                                    Spacer(modifier = Modifier.height(8.dp))
-                                                }
-                                                Button(
-                                                    onClick = {
-                                                        if (newDecoyPasswordInput.isBlank()) {
-                                                            decoyPasswordChangeError = "No puede estar vacía."
-                                                        } else if (newDecoyPasswordInput != confirmNewDecoyPasswordInput) {
-                                                            decoyPasswordChangeError = "No coinciden."
-                                                        } else if (newDecoyPasswordInput == securityPassword) {
-                                                            decoyPasswordChangeError = "No puede ser igual a la real."
-                                                        } else {
-                                                            viewModel.updateDecoyPassword(newDecoyPasswordInput)
-                                                            isChangingDecoyPassword = false
-                                                            newDecoyPasswordInput = ""
-                                                            confirmNewDecoyPasswordInput = ""
-                                                            decoyPasswordChangeError = ""
-                                                            Toast.makeText(context, "Contraseña Señuela guardada", Toast.LENGTH_SHORT).show()
-                                                        }
-                                                    },
-                                                    modifier = Modifier.align(Alignment.End)
-                                                ) {
-                                                    Text("Guardar Contraseña Señuela")
-                                                }
-                                            }
-                                        } else {
-                                            Text("El bloqueo de sistema no soporta modo señuelo. Cambia a PIN o Contraseña para usar esta función.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
-                                        }
-                                    }
-                                }
-                            }
 
                             // Configurable Tap Gesture Trigger (5, 10, or 20 taps)
                             item {
@@ -1913,19 +1898,29 @@ fun LauncherScreen(viewModel: LauncherViewModel) {
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 // App Icon
-                                AndroidView(
-                                    factory = { context ->
-                                        ImageView(context).apply {
-                                            scaleType = ImageView.ScaleType.FIT_CENTER
-                                        }
-                                    },
-                                    update = { imageView ->
-                                        imageView.setImageDrawable(app.icon)
-                                    },
-                                    modifier = Modifier
-                                        .size(40.dp)
-                                        .clip(CircleShape)
-                                )
+                                if (app.iconBitmap != null) {
+                                    Image(
+                                        bitmap = app.iconBitmap,
+                                        contentDescription = app.appName,
+                                        modifier = Modifier
+                                            .size(40.dp)
+                                            .clip(CircleShape)
+                                    )
+                                } else {
+                                    AndroidView(
+                                        factory = { context ->
+                                            ImageView(context).apply {
+                                                scaleType = ImageView.ScaleType.FIT_CENTER
+                                            }
+                                        },
+                                        update = { imageView ->
+                                            imageView.setImageDrawable(app.icon)
+                                        },
+                                        modifier = Modifier
+                                            .size(40.dp)
+                                            .clip(CircleShape)
+                                    )
+                                }
 
                                 Spacer(modifier = Modifier.width(16.dp))
 
@@ -1946,17 +1941,56 @@ fun LauncherScreen(viewModel: LauncherViewModel) {
                                     )
                                 }
 
-                                Checkbox(
-                                    checked = isHidden,
-                                    onCheckedChange = { checked ->
-                                        viewModel.toggleAppHiddenState(
-                                            packageName = app.packageName,
-                                            appName = app.appName,
-                                            shouldHide = checked
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    FilledTonalButton(
+                                        onClick = {
+                                            try {
+                                                val pm = context.packageManager
+                                                var launchIntent = pm.getLaunchIntentForPackage(app.packageName)
+                                                if (launchIntent == null && app.className.isNotBlank()) {
+                                                    launchIntent = Intent(Intent.ACTION_MAIN).apply {
+                                                        addCategory(Intent.CATEGORY_LAUNCHER)
+                                                        setClassName(app.packageName, app.className)
+                                                    }
+                                                }
+                                                if (launchIntent != null) {
+                                                    launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                                    context.startActivity(launchIntent)
+                                                } else {
+                                                    Toast.makeText(context, "No se puede abrir ${app.appName}", Toast.LENGTH_SHORT).show()
+                                                }
+                                            } catch (e: Exception) {
+                                                Toast.makeText(context, "Error al abrir: ${e.localizedMessage ?: "desconocido"}", Toast.LENGTH_SHORT).show()
+                                            }
+                                        },
+                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                        modifier = Modifier
+                                            .height(34.dp)
+                                            .testTag("open_app_${app.packageName}")
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.PlayArrow,
+                                            contentDescription = "Abrir ${app.appName}",
+                                            modifier = Modifier.size(16.dp)
                                         )
-                                    },
-                                    modifier = Modifier.testTag("checkbox_${app.packageName}")
-                                )
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text("Abrir", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                    }
+
+                                    Spacer(modifier = Modifier.width(8.dp))
+
+                                    Checkbox(
+                                        checked = isHidden,
+                                        onCheckedChange = { checked ->
+                                            viewModel.toggleAppHiddenState(
+                                                packageName = app.packageName,
+                                                appName = app.appName,
+                                                shouldHide = checked
+                                            )
+                                        },
+                                        modifier = Modifier.testTag("checkbox_${app.packageName}")
+                                    )
+                                }
                             }
                         }
 
@@ -2002,7 +2036,6 @@ fun LauncherScreen(viewModel: LauncherViewModel) {
                                 }
                             }
                         }
-                        } // This closes the else block for isDecoyLogged
 
                         // Appended Safe Uninstallation card at the absolute bottom of the settings LazyColumn
                         item {
@@ -2075,21 +2108,29 @@ fun AppGridItem(app: AppInfo, context: Context) {
             .clip(RoundedCornerShape(12.dp))
             .clickable {
                 try {
-                    val intent = context.packageManager.getLaunchIntentForPackage(app.packageName)
+                    val pm = context.packageManager
+                    var intent = pm.getLaunchIntentForPackage(app.packageName)
+                    if (intent == null && app.className.isNotBlank()) {
+                        intent = Intent(Intent.ACTION_MAIN).apply {
+                            addCategory(Intent.CATEGORY_LAUNCHER)
+                            setClassName(app.packageName, app.className)
+                        }
+                    }
                     if (intent != null) {
+                        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                         context.startActivity(intent)
                     } else {
                         Toast.makeText(context, "No se puede abrir ${app.appName}", Toast.LENGTH_SHORT).show()
                     }
                 } catch (e: Exception) {
-                    Toast.makeText(context, "Error al abrir la app", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, "Error al abrir la app: ${e.localizedMessage ?: "desconocido"}", Toast.LENGTH_SHORT).show()
                 }
             }
             .padding(vertical = 8.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
-        // App icon container using standard reliable AndroidView with custom sizing
+        // App icon container using hardware-accelerated Compose Image with fallback
         Box(
             modifier = Modifier
                 .size(56.dp)
@@ -2098,17 +2139,27 @@ fun AppGridItem(app: AppInfo, context: Context) {
                 .padding(4.dp),
             contentAlignment = Alignment.Center
         ) {
-            AndroidView(
-                factory = { ctx ->
-                    ImageView(ctx).apply {
-                        scaleType = ImageView.ScaleType.FIT_CENTER
-                    }
-                },
-                update = { imageView ->
-                    imageView.setImageDrawable(app.icon)
-                },
-                modifier = Modifier.fillMaxSize()
-            )
+            if (app.iconBitmap != null) {
+                Image(
+                    bitmap = app.iconBitmap,
+                    contentDescription = app.appName,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .clip(CircleShape)
+                )
+            } else {
+                AndroidView(
+                    factory = { ctx ->
+                        ImageView(ctx).apply {
+                            scaleType = ImageView.ScaleType.FIT_CENTER
+                        }
+                    },
+                    update = { imageView ->
+                        imageView.setImageDrawable(app.icon)
+                    },
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
         }
 
         Spacer(modifier = Modifier.height(8.dp))
@@ -2133,5 +2184,41 @@ fun AppGridItem(app: AppInfo, context: Context) {
                 .fillMaxWidth()
                 .padding(horizontal = 4.dp)
         )
+    }
+}
+
+fun checkIsDefaultLauncher(context: Context): Boolean {
+    val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
+    val resolveInfo = context.packageManager.resolveActivity(intent, PackageManager.MATCH_DEFAULT_ONLY)
+    return resolveInfo?.activityInfo?.packageName == context.packageName
+}
+
+fun launchSetDefaultLauncher(context: Context) {
+    try {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val roleManager = context.getSystemService(RoleManager::class.java)
+            if (roleManager != null && roleManager.isRoleAvailable(RoleManager.ROLE_HOME)) {
+                val intent = roleManager.createRequestRoleIntent(RoleManager.ROLE_HOME)
+                context.startActivity(intent)
+                return
+            }
+        }
+        val intent = Intent(Settings.ACTION_HOME_SETTINGS)
+        context.startActivity(intent)
+    } catch (e: Exception) {
+        try {
+            val intent = Intent(Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS)
+            context.startActivity(intent)
+        } catch (e2: Exception) {
+            try {
+                val intent = Intent(Intent.ACTION_MAIN).apply {
+                    addCategory(Intent.CATEGORY_HOME)
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                }
+                context.startActivity(intent)
+            } catch (e3: Exception) {
+                Toast.makeText(context, "Abre Ajustes > Aplicaciones > Aplicaciones predeterminadas > App de inicio", Toast.LENGTH_LONG).show()
+            }
+        }
     }
 }
